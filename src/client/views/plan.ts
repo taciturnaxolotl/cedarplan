@@ -19,7 +19,7 @@ import { shortTerm, termCodeOf } from "../../catalog";
 import { STANDING_CREDITS } from "../../planner";
 import { groupKey, type ProgramTree } from "../../requirements";
 import { mark, type Sitting, syncPlan } from "../../sync";
-import { applyPlan, installed } from "../bridge";
+import { applySections, installed } from "../bridge";
 import type { Ctx } from "../ctx";
 import { el, tag } from "../dom";
 import { CEILING, FULL_TIME, type Load, readLoad, SUMMERS, verdictOf, writeLoad } from "../load";
@@ -239,7 +239,10 @@ export function mount(root: HTMLElement, ctx: Ctx) {
       const notes = unknown.map((code) => `${code} — no catalog record, so it is left out`);
       return { changes, skipped, notes };
     },
-    apply: applyPlan,
+    // The sections route, even here: a course leaving a term can now let go
+    // of a planned section on the way, and an older bridge reads a change
+    // kind it has never heard of as a removal. Asked this, it says it is old.
+    apply: applySections,
     landed(theirs, changes) {
       const landed = new Set(theirs.planned.map((c) => mark(c.courseId, c.termId)));
       const meant = new Set(
@@ -258,9 +261,18 @@ export function mount(root: HTMLElement, ctx: Ctx) {
             ? [mark(c.courseId, c.from)]
             : [],
       );
+      const sections = new Set(theirs.planned.map((c) => `${c.sectionId}@${c.termId}`));
+      const letGo = changes.filter(
+        (c) => c.kind === "unsection" && !sections.has(`${c.sectionId}@${c.termId}`),
+      ).length;
+      const opened = changes.filter(
+        (c) => c.kind === "term" && theirs.terms.includes(c.termId),
+      ).length;
       return (
         [...meant].filter((entry) => landed.has(entry)).length +
-        gone.filter((entry) => !landed.has(entry)).length
+        gone.filter((entry) => !landed.has(entry)).length +
+        letGo +
+        opened
       );
     },
   });

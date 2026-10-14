@@ -73,6 +73,29 @@ describe("syncing the plan into Colleague", () => {
     expect(skipped[0]?.why).toContain("section");
   });
 
+  /*
+   * CS-3220 sat in SP27 on the real plan with a section somebody had once
+   * clicked, while the plan on screen had it in SP28. A planned section is a
+   * plan, not a seat, so it follows the course.
+   */
+  test("carries a course with only a planned section, letting the section go", () => {
+    const { changes } = run(
+      [want("CS-3220", "101", "2028SP")],
+      [have("101", "2027SP", { sectionId: "55", registered: false })],
+    );
+    expect(changes.map(say)).toEqual([
+      "let go of the section of CS-3220 planned in 2027SP",
+      "move CS-3220 from 2027SP to 2028SP",
+    ]);
+  });
+
+  test("withdraws a course with only a planned section when the plan drops it", () => {
+    const { changes } = run([], [have("101", "2027SP", { sectionId: "55", registered: false })]);
+    expect(changes).toEqual([
+      { kind: "remove", code: "101", courseId: "101", termId: "2027SP", sectionId: "55" },
+    ]);
+  });
+
   test("leaves the term under way and everything behind it alone", () => {
     // A course in progress sits on the degree plan too, and a projection that
     // starts next spring never mentions it. Withdrawing it would be vandalism.

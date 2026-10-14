@@ -99,7 +99,8 @@ export type Change =
       code: string;
       termId: string;
       sectionId: string;
-      number: string;
+      /** "01", when the catalog in hand can say. */
+      number?: string;
     };
 
 /** Something the projection wanted and this will not do, with the reason. */
@@ -145,9 +146,17 @@ export interface SyncPlan {
  */
 export function syncPlan(request: SyncRequest): SyncPlan {
   const { wanted, planned, terms, addable, from } = request;
-  /** Ours to arrange: within the horizon, unregistered, unprotected. */
+  /**
+   * Ours to arrange: within the horizon, unprotected, and holding no section
+   * the student is registered in. A section that is only *planned* used to
+   * pin its course too, which left CS-3220 sitting in a spring the plan on
+   * screen had long since moved it out of, because somebody once clicked a
+   * section of it. A planned section is a plan; it goes where the plan goes.
+   */
   const arrangeable = (course: PlannedCourse) =>
-    termKey(course.termId) >= termKey(from) && !course.sectionId && !course.isProtected;
+    termKey(course.termId) >= termKey(from) &&
+    !course.isProtected &&
+    (!course.sectionId || course.registered === false);
   const changes: Change[] = [];
   const skipped: Skipped[] = [];
 
@@ -211,6 +220,15 @@ export function syncPlan(request: SyncRequest): SyncPlan {
         });
         continue;
       }
+      // Its section belongs to the term it is leaving, so it lets go first.
+      if (elsewhere.sectionId) {
+        moves.push({
+          kind: "unsection",
+          code: sitting.code,
+          termId: elsewhere.termId,
+          sectionId: elsewhere.sectionId,
+        });
+      }
       moves.push({
         kind: "move",
         code: sitting.code,
@@ -229,7 +247,7 @@ export function syncPlan(request: SyncRequest): SyncPlan {
         code: sitting.code,
         termId: sitting.termId,
         why: fixed.sectionId
-          ? `you have a section of this in ${fixed.termId}`
+          ? `you are registered in a section of this in ${fixed.termId}`
           : `${fixed.termId} is protected on your plan`,
       });
       continue;
@@ -252,9 +270,9 @@ export function syncPlan(request: SyncRequest): SyncPlan {
     });
   }
 
-  // Anything planned that this plan does not call for. A course with a section
-  // is never withdrawn, whoever planned it: that is a registration decision
-  // wearing a plan's clothes. Nor is anything in a term already under way.
+  // Anything planned that this plan does not call for. A course with a
+  // registered section is never withdrawn, whoever planned it: that would be
+  // a drop. Nor is anything in a term already under way.
   const removals: Change[] = [];
   for (const course of planned) {
     if (matched.has(course)) continue;
@@ -406,6 +424,8 @@ export function describe(change: Change): string {
     case "section":
       return `plan ${change.code}-${change.number} in ${change.termId}`;
     case "unsection":
-      return `let go of ${change.code}-${change.number} in ${change.termId}`;
+      return change.number
+        ? `let go of ${change.code}-${change.number} in ${change.termId}`
+        : `let go of the section of ${change.code} planned in ${change.termId}`;
   }
 }
