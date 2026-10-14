@@ -106,6 +106,10 @@ export const colleaguePlan = (): Promise<ColleaguePlan> => send({ type: "colleag
 export const applyPlan = (changes: Change[]): Promise<Applied> =>
   send({ type: "applyPlan", changes });
 
+/** The same, for a run that plans sections; an older bridge refuses it. */
+export const applySections = (changes: Change[]): Promise<Applied> =>
+  send({ type: "applySections", changes });
+
 /**
  * A `Searcher` that reads the catalog through the student's own session.
  *

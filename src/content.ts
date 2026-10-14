@@ -37,15 +37,25 @@ export interface Capture {
   evaluations: Record<string, EvaluationResponse>;
 }
 
-/** The student id is not exposed directly; the degree plan carries it. */
-async function studentId(): Promise<string> {
-  const fromDom = document.querySelector<HTMLElement>("[data-person-id]")?.dataset.personId;
-  if (fromDom) return fromDom;
+/** Learned from the first plan this tab reads, and the same thereafter. */
+let knownId: string | null = null;
 
-  const plan = await api.currentDegreePlan("");
-  const id = plan.DegreePlan?.PersonId ?? plan.StudentPrograms?.[0]?.StudentId;
+/**
+ * The degree plan, and the student id it carries.
+ *
+ * `Current` is the slowest thing Self-Service does: well over a minute on a
+ * busy morning. Asking it once for the id and again for the plan, as this
+ * used to, made a preview two of those back to back; with no id it answers
+ * for whoever is signed in, so one call is both.
+ */
+async function currentPlan(): Promise<{ id: string; response: DegreePlanResponse }> {
+  const fromDom = document.querySelector<HTMLElement>("[data-person-id]")?.dataset.personId;
+  const response = await api.currentDegreePlan(knownId ?? fromDom ?? "");
+  const id =
+    response.DegreePlan?.PersonId ?? response.StudentPrograms?.[0]?.StudentId ?? fromDom ?? null;
   if (!id) throw new Error("could not determine student id");
-  return id;
+  knownId = id;
+  return { id, response };
 }
 
 /**
@@ -53,8 +63,7 @@ async function studentId(): Promise<string> {
  *               against their real transcript.
  */
 async function capture(whatIf: string[] = []): Promise<Capture> {
-  const id = await studentId();
-  const plan = await api.currentDegreePlan(id);
+  const { id, response: plan } = await currentPlan();
   const enrolled = plan.StudentPrograms.map((p) => p.Code);
 
   const evaluations: Record<string, EvaluationResponse> = {};
@@ -120,6 +129,15 @@ const codesOf = (terms: { Code: string }[] | string[] | undefined): string[] =>
 function readPlan(response: DegreePlanResponse, studentId: string): ColleaguePlan {
   const plan = response.DegreePlan;
   const dto = plan.DegreePlanDto;
+  // Sections the page itself draws as planned and nothing more. Anything it
+  // does not vouch for is treated as registered, which is the safe mistake.
+  const onlyPlanned = new Set(
+    (plan.Terms ?? []).flatMap((term) =>
+      (term.PlannedCourses ?? [])
+        .filter((c) => c.Section?.Id && c.IsPlanned && !c.HasRegisteredSection && !c.IsWaitlisted)
+        .map((c) => `${c.Section?.Id}@${c.TermCode}`),
+    ),
+  );
   return {
     studentId,
     planned: (dto.Terms ?? []).flatMap((term) =>
@@ -129,6 +147,8 @@ function readPlan(response: DegreePlanResponse, studentId: string): ColleaguePla
         credits: c.Credits,
         sectionId: c.SectionId,
         ...(c.IsProtected ? { isProtected: true } : {}),
+        ...(c.SectionId ? { registered: !onlyPlanned.has(`${c.SectionId}@${c.TermId}`) } : {}),
+        ...(c.GradingType ? { gradingType: c.GradingType } : {}),
       })),
     ),
     terms: (plan.Terms ?? []).map((t) => t.Code),
@@ -157,27 +177,44 @@ function readPlan(response: DegreePlanResponse, studentId: string): ColleaguePla
  */
 let carried: DegreePlanDto | null = null;
 
+/** One change, as the endpoint that makes it. */
+function write(change: Change, dto: DegreePlanDto): Promise<DegreePlanView> {
+  switch (change.kind) {
+    case "term":
+      return api.addTermToPlan(change.termId, dto);
+    case "add":
+      return api.addCourseToPlan(change.courseId, change.termId, change.credits, dto);
+    case "move":
+      return api.moveCourseOnPlan(change.courseId, change.from, change.to, dto);
+    case "remove":
+      return api.removeCourseFromPlan(change.courseId, change.termId, change.sectionId, dto);
+    case "section":
+      return api.addSectionToPlan(
+        change.courseId,
+        change.termId,
+        change.sectionId,
+        change.gradingType,
+        change.credits,
+        dto,
+      );
+    case "unsection":
+      return api.removeSectionFromPlan(change.sectionId, dto);
+  }
+}
+
 async function applyPlan(changes: Change[]): Promise<Applied> {
-  const id = await studentId();
   if (!carried) {
-    const current = await api.currentDegreePlan(id);
-    if (current.DegreePlan.IsPlanProtected) {
+    const { response } = await currentPlan();
+    if (response.DegreePlan.IsPlanProtected) {
       throw new Error("your degree plan is protected; an advisor has to unlock it");
     }
-    carried = current.DegreePlan.DegreePlanDto;
+    carried = response.DegreePlan.DegreePlanDto;
   }
 
   const done: Change[] = [];
   for (const change of changes) {
     try {
-      const dto: DegreePlanDto = carried;
-      const view: DegreePlanView = await (change.kind === "term"
-        ? api.addTermToPlan(change.termId, dto)
-        : change.kind === "add"
-          ? api.addCourseToPlan(change.courseId, change.termId, change.credits, dto)
-          : change.kind === "move"
-            ? api.moveCourseOnPlan(change.courseId, change.from, change.to, dto)
-            : api.removeCourseFromPlan(change.courseId, change.termId, change.sectionId, dto));
+      const view = await write(change, carried);
       carried = view.DegreePlanDto;
       done.push(change);
     } catch (err) {
@@ -221,6 +258,12 @@ export type Request =
    */
   | { type: "applyPlan"; changes: Change[] }
   /**
+   * The same, with sections among the changes. A request of its own rather
+   * than more kinds under `applyPlan`, because an older content script reads
+   * any kind it does not know as a removal; asked this, it says it is stale.
+   */
+  | { type: "applySections"; changes: Change[] }
+  /**
    * One page of the course catalog, read on the student's session.
    *
    * Cedarville put the public catalog behind SSO, so a signed-in browser is
@@ -259,6 +302,7 @@ export interface ReplyMap {
   capture: Capture;
   colleaguePlan: ColleaguePlan;
   applyPlan: Applied;
+  applySections: Applied;
   search: SearchPage;
 }
 
@@ -283,10 +327,14 @@ chrome.runtime.onMessage.addListener((msg: Request, _sender, reply) => {
         case "capture":
           return { ok: true, data: await capture(msg.whatIf) };
         case "colleaguePlan": {
-          const id = await studentId();
-          return { ok: true, data: readPlan(await api.currentDegreePlan(id), id) };
+          const { id, response } = await currentPlan();
+          // The plan just read is the freshest there is, so the writes that
+          // usually follow a preview start from it rather than reading again.
+          carried = response.DegreePlan.DegreePlanDto;
+          return { ok: true, data: readPlan(response, id) };
         }
         case "applyPlan":
+        case "applySections":
           return { ok: true, data: await applyPlan(msg.changes) };
         case "search":
           return { ok: true, data: await api.search(msg.criteria) };

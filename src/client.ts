@@ -124,8 +124,15 @@ export class SelfService implements Searcher {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
-    // An expired session redirects to an HTML error page rather than 401ing.
-    if (res.url.includes("/Account/Unauthorized") || res.url.includes("signin.cedarville.edu")) {
+    // An expired session never 401s. It redirects, to an error page or to the
+    // login page, and the login page answers an AJAX request with JSON of its
+    // own: `{"InvalidSession":"true"}`, which parses, and which used to be
+    // handed on as though it were a degree plan.
+    if (
+      res.url.includes("/Account/Unauthorized") ||
+      res.url.includes("/Account/Login") ||
+      res.url.includes("signin.cedarville.edu")
+    ) {
       throw new UnauthorizedError(path);
     }
     // These reach a student, sometimes mid-sync, so they say what happened
@@ -135,8 +142,9 @@ export class SelfService implements Searcher {
     if (!res.ok) throw new Error(`${plainly(res.status)} (${path})`);
 
     const text = await res.text();
+    let parsed: unknown;
     try {
-      return JSON.parse(text) as T;
+      parsed = JSON.parse(text);
     } catch {
       // A stale token yields the antiforgery complaint as plain text.
       if (text.includes("antiforgery")) {
@@ -145,6 +153,10 @@ export class SelfService implements Searcher {
       }
       throw new Error(`Self-Service answered with a page rather than data (${path})`);
     }
+    if ((parsed as { InvalidSession?: unknown } | null)?.InvalidSession) {
+      throw new UnauthorizedError(path);
+    }
+    return parsed as T;
   }
 
   /**
@@ -282,6 +294,36 @@ export class SelfService implements Searcher {
       removeCourseId: courseId,
       removeCourseTermId: termId,
       removeCourseSectionId: sectionId,
+      degreePlan,
+    });
+  }
+
+  /**
+   * Plans a section, adding the course to the term if it is not there yet.
+   * A planned section is what "Register Now" will offer; it registers nothing.
+   */
+  addSectionToPlan(
+    courseId: string,
+    termId: string,
+    sectionId: string,
+    gradingType: string,
+    credits: number,
+    degreePlan: DegreePlanDto,
+  ): Promise<DegreePlanView> {
+    return this.#written("/Student/Planning/DegreePlans/AddSection", {
+      courseId,
+      termId,
+      sectionId,
+      gradingType,
+      credits,
+      degreePlan,
+    });
+  }
+
+  /** Takes a planned section off. Never a registered one: that is a drop. */
+  removeSectionFromPlan(sectionId: string, degreePlan: DegreePlanDto): Promise<DegreePlanView> {
+    return this.#written("/Student/Planning/DegreePlans/RemoveSection", {
+      removeSectionId: sectionId,
       degreePlan,
     });
   }

@@ -36,8 +36,9 @@ import {
   offeringsFromListing,
   type Weekday,
 } from "../../schedule";
+import { type SectionPick, syncSections } from "../../sync";
 import { type Arrangement, arrange, type SectionChoice, type Shape } from "../../timetable";
-import { liveSeats } from "../bridge";
+import { applySections, installed, liveSeats } from "../bridge";
 import type { Ctx } from "../ctx";
 import { el, tag } from "../dom";
 import { olderThan, since, TERM_HOURS } from "../freshness";
@@ -45,6 +46,7 @@ import { readLoad } from "../load";
 import { type Moves, OUT, readMoves, writeMoves } from "../moves";
 import { baseCode, planningFrom, projectionFrom, read } from "../planning";
 import { createStore, Subscriptions } from "../store";
+import { colleagueSync } from "./colleague";
 
 const PINNED = "cedarville:picked-sections";
 const SHAPE = "cedarville:week-shape";
@@ -368,12 +370,85 @@ export function mount(root: HTMLElement, ctx: Ctx) {
     store.set({ pinned: new Set() });
   });
 
+  // ---- sending the week to Colleague ----------------------------------------
+
+  /*
+   * The week, as planned sections on the student's own degree plan. That is
+   * where Self-Service's "Register Now" looks, so on the morning registration
+   * opens the choosing is already done. It plans; it never registers, and a
+   * section the student is already registered in is never swapped out.
+   *
+   * Every course on the week goes, whether its section was picked by hand or
+   * by the arranger: the week on screen is the answer, and it is shown in full
+   * before anything is written.
+   */
+  const panel = el("div", "sync");
+  const push = el("button", "export");
+  push.type = "button";
+  push.textContent = "send to Colleague";
+  push.title =
+    "Plans these sections on your real degree plan, ready for Register Now. Shows what would " +
+    "change first, and registers you for nothing.";
+
+  const numbers = new Map(all.map((o) => [o.id, o.number]));
+  const preview = colleagueSync({
+    panel,
+    work(theirs) {
+      const picks: SectionPick[] = shown.rows.flatMap((row) => {
+        const offering = shown.arranged.chosen.get(baseCode(row.code));
+        if (!offering) return [];
+        const { min, max = min } = offering.credits;
+        return [
+          {
+            code: offering.courseName,
+            courseId: offering.courseId,
+            sectionId: offering.id,
+            number: offering.number,
+            termId: term,
+            credits: row.credits >= min && row.credits <= max ? row.credits : min,
+          },
+        ];
+      });
+      const { changes, skipped } = syncSections({
+        picks,
+        planned: theirs.planned,
+        terms: theirs.terms,
+        addable: theirs.addable,
+        from: termCodeOf(slots[0] ?? { year: 0, season: "spring" }),
+        numbers,
+      });
+      const placed = new Set(picks.map((p) => p.code));
+      const notes = shown.rows
+        .map((row) => baseCode(row.code))
+        .filter((code) => !placed.has(code))
+        .map((code) => `${code}: no section on the week, so it is left out`);
+      return { changes, skipped, notes };
+    },
+    apply: applySections,
+    landed(theirs, changes) {
+      const held = new Set(theirs.planned.map((c) => `${c.sectionId}@${c.termId}`));
+      return changes.filter((c) =>
+        c.kind === "section"
+          ? held.has(`${c.sectionId}@${c.termId}`)
+          : c.kind === "unsection"
+            ? !held.has(`${c.sectionId}@${c.termId}`)
+            : c.kind === "term"
+              ? theirs.terms.includes(c.termId)
+              : c.kind === "move"
+                ? theirs.planned.some((p) => p.courseId === c.courseId && p.termId === c.to)
+                : false,
+      ).length;
+    },
+  });
+  push.addEventListener("click", () => void preview());
+
   controls.append(
     el("label", undefined, "term"),
     terms,
     el("label", undefined, "aim for"),
     shape,
     unpinAll,
+    ...(installed() ? [push] : []),
   );
 
   const summary = el("p", "credits");
@@ -384,7 +459,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
   const body = el("div", "here");
   const week = el("div", "week");
   week.append(summary, freshness, clashes, gridBox);
-  root.replaceChildren(controls, head, week, body);
+  root.replaceChildren(controls, panel, head, week, body);
 
   /** The term the list was last built from, so the grid can repaint alone. */
   let shown: Shown = termOf(store.get().moves, store.get().pinned, store.get().shape);

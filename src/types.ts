@@ -178,6 +178,20 @@ export interface DegreePlanDto {
 }
 
 /**
+ * A course as the Plan & Schedule page draws it. The DTO says which section
+ * is attached; only this says whether that section is merely planned.
+ */
+export interface ViewPlannedCourse {
+  /** The course id. */
+  Id: string;
+  TermCode: string;
+  IsPlanned?: boolean;
+  HasRegisteredSection?: boolean;
+  IsWaitlisted?: boolean;
+  Section?: { Id: string } | null;
+}
+
+/**
  * The plan as Self-Service renders it: the DTO plus everything the page needs
  * around it.
  *
@@ -192,7 +206,13 @@ export interface DegreePlanView {
   Version: number;
   DegreePlanDto: DegreePlanDto;
   /** Terms on the plan, in Colleague's own order. */
-  Terms: { Code: string; Description: string; IsTermProtected?: boolean }[];
+  Terms: {
+    Code: string;
+    Description: string;
+    IsTermProtected?: boolean;
+    /** The page's own view of each course, which is where registration shows. */
+    PlannedCourses?: ViewPlannedCourse[];
+  }[];
   /** Terms the plan could be extended with — where the summers live. */
   UnplannedTerms?: { Code: string }[] | string[];
   AvailablePlanningTerms?: { Code: string }[] | string[];

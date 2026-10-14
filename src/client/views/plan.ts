@@ -18,14 +18,15 @@
 import { shortTerm, termCodeOf } from "../../catalog";
 import { STANDING_CREDITS } from "../../planner";
 import { groupKey, type ProgramTree } from "../../requirements";
-import { type Change, mark, type Sitting, describe as sayChange, syncPlan } from "../../sync";
-import { applyPlan, colleaguePlan, installed } from "../bridge";
+import { mark, type Sitting, syncPlan } from "../../sync";
+import { applyPlan, installed } from "../bridge";
 import type { Ctx } from "../ctx";
 import { el, tag } from "../dom";
 import { CEILING, FULL_TIME, type Load, readLoad, SUMMERS, verdictOf, writeLoad } from "../load";
 import { editsOf, type Moves, OUT, readMoves, writeMoves } from "../moves";
 import { baseCode, planningFrom, projectionFrom, read } from "../planning";
 import { createStore, Subscriptions } from "../store";
+import { colleagueSync } from "./colleague";
 import { mountGraph } from "./graph";
 
 type Shape = "graph" | "list";
@@ -188,7 +189,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
   // ---- sending it to Colleague -----------------------------------------
 
   /*
-   * The only thing this application writes anywhere. Everything above reads a
+   * The only thing this tab writes anywhere. Everything above reads a
    * registrar's data and reasons about it; this puts the answer back where an
    * advisor will see it, so it happens on purpose, after being shown in full.
    *
@@ -222,175 +223,47 @@ export function mount(root: HTMLElement, ctx: Ctx) {
     return { wanted, unknown };
   }
 
-  const line = (text: string, kind = "muted") => el("p", kind, text);
-
-  async function preview() {
-    panel.replaceChildren(line("reading your plan in Colleague…"));
-    let theirs: Awaited<ReturnType<typeof colleaguePlan>>;
-    try {
-      theirs = await colleaguePlan();
-    } catch (err) {
-      // One sentence, and only the remedy that fits. Stacking a generic
-      // "sign in and try again" under every failure taught a student to read
-      // neither line.
-      const why = err instanceof Error ? err.message : String(err);
-      panel.replaceChildren(el("h3", undefined, "could not read your plan"), line(why, "why"));
-      if (/sign|session|unauthor/i.test(why)) {
-        panel.append(line("open Self-Service in another tab and sign in, then try again."));
-      }
-      return;
-    }
-
-    if (theirs.locked) {
-      panel.replaceChildren(line("your degree plan is protected; an advisor has to unlock it."));
-      return;
-    }
-
-    const { wanted, unknown } = sittings();
-    const { changes, skipped } = syncPlan({
-      wanted,
-      planned: theirs.planned,
-      terms: theirs.terms,
-      addable: theirs.addable,
-      // The projection's own first term. Everything before it is the term
-      // under way and the ones behind it, which this leaves alone.
-      from: termCodeOf(planning.slots(store.get().load)[0] ?? { year: 0, season: "spring" }),
-    });
-
-    panel.replaceChildren();
-    const head = el("h3", undefined, changes.length ? "this would change" : "nothing to change");
-    panel.append(head);
-
-    for (const change of changes) panel.append(el("div", "sync-change", sayChange(change)));
-    for (const miss of skipped) {
-      panel.append(el("div", "sync-change muted", `${miss.code ?? ""} — ${miss.why}`.trim()));
-    }
-    for (const code of unknown) {
-      panel.append(
-        el("div", "sync-change muted", `${code} — no catalog record, so it is left out`),
+  const preview = colleagueSync({
+    panel,
+    work(theirs) {
+      const { wanted, unknown } = sittings();
+      const { changes, skipped } = syncPlan({
+        wanted,
+        planned: theirs.planned,
+        terms: theirs.terms,
+        addable: theirs.addable,
+        // The projection's own first term. Everything before it is the term
+        // under way and the ones behind it, which this leaves alone.
+        from: termCodeOf(planning.slots(store.get().load)[0] ?? { year: 0, season: "spring" }),
+      });
+      const notes = unknown.map((code) => `${code} — no catalog record, so it is left out`);
+      return { changes, skipped, notes };
+    },
+    apply: applyPlan,
+    landed(theirs, changes) {
+      const landed = new Set(theirs.planned.map((c) => mark(c.courseId, c.termId)));
+      const meant = new Set(
+        changes.flatMap((c) =>
+          c.kind === "add"
+            ? [mark(c.courseId, c.termId)]
+            : c.kind === "move"
+              ? [mark(c.courseId, c.to)]
+              : [],
+        ),
       );
-    }
-
-    if (!changes.length) {
-      panel.append(line("Colleague already agrees with this plan."));
-      return;
-    }
-
-    const go = el("button", "export");
-    go.type = "button";
-    go.textContent = `send ${changes.length} change${changes.length === 1 ? "" : "s"}`;
-    go.addEventListener("click", () => void commit(changes));
-
-    const cancel = el("button", "export");
-    cancel.type = "button";
-    cancel.textContent = "cancel";
-    cancel.addEventListener("click", () => panel.replaceChildren());
-
-    const row = el("div", "sync-actions");
-    row.append(go, cancel);
-    panel.append(row);
-  }
-
-  /**
-   * Writes the changes, one at a time, saying where it has got to.
-   *
-   * One at a time because thirty round trips is long enough that a student
-   * needs to see it moving, and a single call across the bridge can only
-   * answer once. The extension keeps the plan Colleague handed back between
-   * them, which is what the next write has to carry.
-   */
-  async function commit(changes: Change[]) {
-    // Two divs rather than <progress>, which takes no colour at all until it
-    // is given an appearance of none and a pair of vendor pseudo-elements —
-    // and then still renders its own idea of a bar. This one is a track and a
-    // fill, and does what the stylesheet says.
-    const fill = el("span");
-    fill.style.width = "0%";
-    const bar = el("div", "bar");
-    bar.append(fill);
-    const doing = el("p", "muted");
-    panel.replaceChildren(el("h3", undefined, "writing to your degree plan"), bar, doing);
-
-    const done: Change[] = [];
-    let stopped: { change: Change; why: string } | null = null;
-
-    for (const change of changes) {
-      doing.textContent = `${done.length + 1} of ${changes.length} · ${sayChange(change)}`;
-      try {
-        const result = await applyPlan([change]);
-        done.push(...result.applied);
-        if (result.stopped) {
-          stopped = result.stopped;
-          break;
-        }
-      } catch (err) {
-        stopped = { change, why: err instanceof Error ? err.message : String(err) };
-        break;
-      }
-      // Painted from what came back rather than from where the loop is: the
-      // bar should say what has landed, which is the whole point of it.
-      fill.style.width = `${Math.round((done.length / changes.length) * 100)}%`;
-    }
-
-    await settle(changes, done, stopped);
-  }
-
-  /**
-   * Says what happened, having gone and looked.
-   *
-   * Counting the calls that came back is not the same as counting what
-   * landed: a write that succeeded and then failed to be *read* reported
-   * itself as nothing written while the course sat on the plan. So the report,
-   * and the ledger under it, come from Colleague's own answer afterwards
-   * rather than from what this end believes it did.
-   */
-  async function settle(
-    changes: Change[],
-    done: Change[],
-    stopped: { change: Change; why: string } | null,
-  ) {
-    const meant = new Set(
-      changes.flatMap((c) =>
-        c.kind === "add"
+      const gone = changes.flatMap((c) =>
+        c.kind === "remove"
           ? [mark(c.courseId, c.termId)]
           : c.kind === "move"
-            ? [mark(c.courseId, c.to)]
+            ? [mark(c.courseId, c.from)]
             : [],
-      ),
-    );
-    const gone = changes.flatMap((c) =>
-      c.kind === "remove"
-        ? [mark(c.courseId, c.termId)]
-        : c.kind === "move"
-          ? [mark(c.courseId, c.from)]
-          : [],
-    );
-
-    let landed: Set<string> | null = null;
-    try {
-      const theirs = await colleaguePlan();
-      landed = new Set(theirs.planned.map((c) => mark(c.courseId, c.termId)));
-    } catch {
-      /* Cannot check, so the count below falls back to what the calls said. */
-    }
-
-    const count = landed
-      ? [...meant].filter((entry) => landed.has(entry)).length +
+      );
+      return (
+        [...meant].filter((entry) => landed.has(entry)).length +
         gone.filter((entry) => !landed.has(entry)).length
-      : done.length;
-    panel.replaceChildren(el("h3", undefined, `${count} of ${changes.length} on your degree plan`));
-    if (stopped) {
-      panel.append(line(`stopped at "${sayChange(stopped.change)}" — ${stopped.why}`, "why"));
-      panel.append(line("nothing after that was tried."));
-      const again = el("button", "export");
-      again.type = "button";
-      again.textContent = "work out what is left";
-      again.addEventListener("click", () => void preview());
-      const row = el("div", "sync-actions");
-      row.append(again);
-      panel.append(row);
-    }
-  }
+      );
+    },
+  });
 
   // ---- dragging --------------------------------------------------------
 

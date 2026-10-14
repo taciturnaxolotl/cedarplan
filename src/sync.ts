@@ -27,6 +27,18 @@
  * one is refused. So the calls run in sequence, each fed the plan the last one
  * handed back, and never in parallel.
  *
+ * Sections go on the same plan, through two more endpoints the page names in
+ * `Ellucian.Student.planRepositoryUrls`:
+ *
+ *   POST /Student/Planning/DegreePlans/AddSection
+ *        { courseId, termId, sectionId, gradingType, credits, degreePlan }
+ *   POST /Student/Planning/DegreePlans/RemoveSection
+ *        { removeSectionId, degreePlan }
+ *
+ * A planned section is still only a plan: it is what Self-Service's own
+ * "Register Now" button reads, and nothing more. A *registered* section is
+ * the other kind, and this never adds over one or takes one away.
+ *
  * `RegisterSections` sits on the same controller and is deliberately not
  * wired to anything. Planning a course and registering for it are different
  * promises, and only one of them is ours to make.
@@ -44,6 +56,14 @@ export interface PlannedCourse {
   /** Set once a section is chosen, and the mark of work we must not touch. */
   sectionId: string | null;
   isProtected?: boolean;
+  /**
+   * The section is registered, waitlisted or under way, rather than merely
+   * planned. Unknown counts as registered: guessing the other way would offer
+   * to swap a section the student is sitting in.
+   */
+  registered?: boolean;
+  /** "Graded", "PassFail" or "Audit"; kept when a section is swapped. */
+  gradingType?: string;
 }
 
 /** A course the projection wants in a term, one entry per sitting. */
@@ -60,7 +80,27 @@ export type Change =
   | { kind: "term"; termId: string }
   | { kind: "add"; code: string; courseId: string; termId: string; credits: number }
   | { kind: "move"; code: string; courseId: string; from: string; to: string }
-  | { kind: "remove"; code: string; courseId: string; termId: string; sectionId: string | null };
+  | { kind: "remove"; code: string; courseId: string; termId: string; sectionId: string | null }
+  /** Put a section on the plan. Planned, not registered. */
+  | {
+      kind: "section";
+      code: string;
+      courseId: string;
+      termId: string;
+      sectionId: string;
+      /** "02", for saying which one. */
+      number: string;
+      credits: number;
+      gradingType: string;
+    }
+  /** Take a planned section off, so another can take its place. */
+  | {
+      kind: "unsection";
+      code: string;
+      termId: string;
+      sectionId: string;
+      number: string;
+    };
 
 /** Something the projection wanted and this will not do, with the reason. */
 export interface Skipped {
@@ -234,6 +274,124 @@ export function syncPlan(request: SyncRequest): SyncPlan {
   return { changes, skipped };
 }
 
+/** A section the week settled on, as Colleague will want it named. */
+export interface SectionPick {
+  /** "CS-3220". */
+  code: string;
+  courseId: string;
+  sectionId: string;
+  number: string;
+  termId: string;
+  credits: number;
+}
+
+export interface SectionRequest {
+  picks: readonly SectionPick[];
+  planned: readonly PlannedCourse[];
+  terms: readonly string[];
+  addable: readonly string[];
+  /** The first term the plan covers; a course before it is not ours to move. */
+  from: string;
+  /** Section numbers by id, so a swap can say which section it lets go of. */
+  numbers?: ReadonlyMap<string, string>;
+}
+
+/**
+ * What it would take for Colleague's schedule for a term to hold these
+ * sections.
+ *
+ * Pure, like `syncPlan`, so the preview is the run. Only the picked courses
+ * are spoken for: a section planned in the same term for some course the week
+ * does not mention is left exactly where it is, because nothing here has an
+ * opinion about it.
+ */
+export function syncSections(request: SectionRequest): SyncPlan {
+  const { picks, planned, terms, addable, from, numbers } = request;
+  const changes: Change[] = [];
+  const skipped: Skipped[] = [];
+
+  const opened = new Set(terms);
+  const openTerm = (termId: string): boolean => {
+    if (opened.has(termId)) return true;
+    if (!addable.includes(termId)) return false;
+    changes.push({ kind: "term", termId });
+    opened.add(termId);
+    return true;
+  };
+
+  const moves: Change[] = [];
+  const swaps: Change[] = [];
+
+  for (const pick of picks) {
+    const entries = planned.filter((c) => c.courseId === pick.courseId);
+    const here = entries.find((c) => c.termId === pick.termId);
+    const skip = (why: string) => skipped.push({ code: pick.code, termId: pick.termId, why });
+
+    if (here?.sectionId === pick.sectionId) continue;
+
+    if (here?.sectionId && here.registered !== false) {
+      skip(`you are registered in another section of this in ${here.termId}`);
+      continue;
+    }
+    if (here?.isProtected) {
+      skip(`${here.termId} is protected on your plan`);
+      continue;
+    }
+
+    if (!here) {
+      const fixed = entries.find((c) => c.sectionId && c.registered !== false);
+      if (fixed) {
+        skip(`you have a section of this in ${fixed.termId}`);
+        continue;
+      }
+      if (!openTerm(pick.termId)) {
+        skip(`Colleague has no ${pick.termId} to plan into`);
+        continue;
+      }
+      // Planned for another term, and free to go: carry it here first, or
+      // the section lands beside a second copy of the course.
+      const loose = entries.find(
+        (c) => !c.sectionId && !c.isProtected && termKey(c.termId) >= termKey(from),
+      );
+      if (loose) {
+        moves.push({
+          kind: "move",
+          code: pick.code,
+          courseId: pick.courseId,
+          from: loose.termId,
+          to: pick.termId,
+        });
+      }
+    }
+
+    // A planned section of another number gives way first. Colleague holds
+    // one per course and term, and a run that stops between the two leaves a
+    // planned course without a section, which is the mildest place to stop.
+    if (here?.sectionId) {
+      swaps.push({
+        kind: "unsection",
+        code: pick.code,
+        termId: pick.termId,
+        sectionId: here.sectionId,
+        number: numbers?.get(here.sectionId) ?? here.sectionId,
+      });
+    }
+    swaps.push({
+      kind: "section",
+      code: pick.code,
+      courseId: pick.courseId,
+      termId: pick.termId,
+      sectionId: pick.sectionId,
+      number: pick.number,
+      credits: here?.credits ?? pick.credits,
+      gradingType: here?.gradingType ?? "Graded",
+    });
+  }
+
+  changes.push(...moves, ...swaps);
+  return { changes, skipped };
+}
+
 /** What a change says to a student, in one line. */
 export function describe(change: Change): string {
   switch (change.kind) {
@@ -245,5 +403,9 @@ export function describe(change: Change): string {
       return `move ${change.code} from ${change.from} to ${change.to}`;
     case "remove":
       return `take ${change.code} out of ${change.termId}`;
+    case "section":
+      return `plan ${change.code}-${change.number} in ${change.termId}`;
+    case "unsection":
+      return `let go of ${change.code}-${change.number} in ${change.termId}`;
   }
 }
