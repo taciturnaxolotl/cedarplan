@@ -1283,6 +1283,10 @@ details.req > summary {
   fill: var(--overlay);
 }
 
+.graph .node .name.why {
+  fill: var(--red);
+}
+
 .graph .node {
   cursor: default;
 }
@@ -1451,4 +1455,16 @@ details.req > summary {
   fill: var(--surface);
   opacity: 0.35;
   pointer-events: none;
+}
+
+.graph .over-band {
+  fill: none;
+  stroke: var(--red);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+
+.graph .term-label.over {
+  fill: var(--red);
 }

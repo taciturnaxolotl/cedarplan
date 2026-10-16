@@ -63,6 +63,48 @@ export function termAt(map: CourseMap, point: { x: number; y: number }) {
 const fit = (text: string, chars: number) =>
   text.length <= chars ? text : `${text.slice(0, Math.max(0, chars - 1)).trimEnd()}…`;
 
+/** The planner's wording for a term over its credit cap. */
+const OVER_CAP = /over its cap of/;
+
+/** The band a term occupies, from its heading to the next one's. */
+function bandOf(map: CourseMap, term: CourseMap["terms"][number]) {
+  const down = map.flow === "down";
+  const next = map.terms[map.terms.indexOf(term) + 1];
+  const start = down ? term.y : term.x;
+  const end = (down ? next?.y : next?.x) ?? (down ? map.height : map.width);
+  return {
+    x: down ? 0 : start - 6,
+    y: down ? start - 6 : 0,
+    width: down ? map.width : end - start,
+    height: down ? end - start : map.height,
+  };
+}
+
+/**
+ * The dashed outline around a term over its cap.
+ *
+ * Drawn inside the picture's own box and never past it, so the canvas is the
+ * same size whether any term is over or not and nothing on the page moves.
+ * Two adjustments on the band it comes from: inset by the stroke, which is
+ * centred on the edge and would otherwise lose half its width to the canvas
+ * clip, and, flowing down, lifted above the heading so the dashes run round
+ * the label rather than through it, with the gap to the rows either side
+ * split evenly.
+ */
+function outlineOf(map: CourseMap, term: CourseMap["terms"][number]) {
+  const band = bandOf(map, term);
+  const inset = 1;
+  const lift = map.flow === "down" ? 8 : 0;
+  const top = Math.max(inset, band.y - lift);
+  const left = Math.max(inset, band.x);
+  return {
+    x: left,
+    y: top,
+    width: Math.min(band.x + band.width, map.width - inset) - left,
+    height: Math.min(band.y + band.height - lift, map.height - inset) - top,
+  };
+}
+
 export function mountGraph(
   root: HTMLElement,
   plan: Plan,
@@ -190,17 +232,10 @@ export function mountGraph(
       band.style.display = "none";
       return;
     }
-    const { map } = drawn;
-    const down = map.flow === "down";
-    const at = map.terms.indexOf(term);
-    const next = map.terms[at + 1];
-    const start = down ? term.y : term.x;
-    const end = (down ? next?.y : next?.x) ?? (down ? map.height : map.width);
     band.style.display = "";
-    band.setAttribute("x", String(down ? 0 : start - 6));
-    band.setAttribute("y", String(down ? start - 6 : 0));
-    band.setAttribute("width", String(down ? map.width : end - start));
-    band.setAttribute("height", String(down ? end - start : map.height));
+    for (const [key, value] of Object.entries(bandOf(drawn.map, term))) {
+      band.setAttribute(key, String(value));
+    }
   }
 
   const letGo = () => {
@@ -318,16 +353,32 @@ export function mountGraph(
     canvas.append(band);
 
     const shortTerms = new Set(plan.terms.filter((t) => t.short).map((t) => t.slot.name));
+    /*
+     * Too many credits is a fact about a term, not about whichever course
+     * happened to be placed last, so it is drawn around the term: a dashed
+     * outline over the whole row. Red on one card read as that card being
+     * wrong, when moving any course out of the term would fix it.
+     */
+    const caps = new Map(plan.terms.map((t) => [t.slot.name, t.slot.capacity]));
+    const overTerms = new Set(
+      map.terms
+        .filter((t) => !t.past && t.credits > (caps.get(t.name) ?? Number.POSITIVE_INFINITY))
+        .map((t) => t.name),
+    );
+    for (const term of map.terms) {
+      if (!overTerms.has(term.name)) continue;
+      canvas.append(svg("rect", { class: "over-band", rx: 4, ...outlineOf(map, term) }));
+    }
     for (const term of map.terms) {
       canvas.append(
         Object.assign(
           svg("text", {
             x: term.x,
             y: term.y,
-            class: `term-label${term.past ? " past" : ""}${shortTerms.has(term.name) ? " short" : ""}`,
+            class: `term-label${term.past ? " past" : ""}${shortTerms.has(term.name) ? " short" : ""}${overTerms.has(term.name) ? " over" : ""}`,
           }),
           {
-            textContent: `${term.name} · ${term.credits}cr${shortTerms.has(term.name) ? " · part time" : ""}`,
+            textContent: `${term.name} · ${term.credits}cr${shortTerms.has(term.name) ? " · part time" : ""}${overTerms.has(term.name) ? ` · over ${caps.get(term.name)}` : ""}`,
           },
         ),
       );
@@ -346,7 +397,10 @@ export function mountGraph(
     }
 
     const boxes = new Map<string, SVGGElement>();
-    for (const node of map.nodes) {
+    for (const drawnNode of map.nodes) {
+      // The term outline says the cap, so the course does not say it again.
+      const rest = drawnNode.conflicts?.filter((c) => !OVER_CAP.test(c));
+      const node = { ...drawnNode, conflicts: rest?.length ? rest : undefined };
       const g = svg("g", {
         class: `node${node.past ? ` ${node.past}` : ""}${node.moved ? " moved" : ""}${node.conflicts ? " clashes" : ""}`,
         transform: `translate(${node.x}, ${node.y})`,
@@ -385,12 +439,20 @@ export function mountGraph(
           { textContent: `${node.credits}cr${now}` },
         ),
       );
+      // A red border with its reason only in a hover tooltip read as a red
+      // border with no reason: an SVG <title> waits a second or more and some
+      // browsers never show it. So a clash takes the title's line, in the
+      // colour of the border, and the title goes to the tooltip instead.
+      const clash = node.conflicts ? `↳ ${node.conflicts.join(", and ")}` : "";
       g.append(
-        Object.assign(svg("text", { x: 8, y: 32, class: "name" }), {
-          textContent: fit(node.title, Math.floor(inner / 5.4) - (gates ? gates.length + 2 : 0)),
+        Object.assign(svg("text", { x: 8, y: 32, class: clash ? "name why" : "name" }), {
+          textContent: fit(
+            clash || node.title,
+            Math.floor(inner / 5.4) - (gates && !clash ? gates.length + 2 : 0),
+          ),
         }),
       );
-      if (gates) {
+      if (gates && !clash) {
         g.append(
           Object.assign(
             svg("text", { x: map.node.width - 8, y: 32, class: "sub", "text-anchor": "end" }),

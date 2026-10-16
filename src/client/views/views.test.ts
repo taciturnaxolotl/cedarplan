@@ -2328,6 +2328,90 @@ describe("plan view — drawn as a graph", () => {
   });
 
   /*
+   * Too many credits belongs to the term, not to the course that tipped it:
+   * any course out of the term fixes it. So the row is outlined, and the
+   * cards keep only what is wrong with them in particular.
+   */
+  test("outlines a term over its cap, rather than reddening one course", () => {
+    asGraph();
+    const numbers = ["1100", "1200", "1300", "1400", "1500"];
+    const heavy = numbers.map((n) => ({
+      SubjectCode: "ART",
+      Number: n,
+      Title: `Art ${n}`,
+      MinimumCredits: 3,
+    })) as unknown as NonNullable<Ctx["allCourses"]>;
+    const five = normalize(
+      program("BS.CYOPR", [
+        group({ Courses: numbers.map((n, i) => course(String(100 + i), "ART", n)) }),
+      ]),
+    );
+    const ctx = { trees: [five], enrolled: ["BS.CYOPR"], allCourses: heavy };
+
+    const first = plan.mount(root, ctx);
+    const term = (root.querySelector(".graph .term-label:not(.past)")?.textContent ?? "").split(
+      " ",
+    )[0]!;
+    first.destroy();
+
+    localStorage.setItem(
+      "cedarville:load",
+      JSON.stringify({ perTerm: 12, summer: 7, summers: 0, fullSemesters: false }),
+    );
+    localStorage.setItem(
+      "cedarville:moves",
+      JSON.stringify(Object.fromEntries(numbers.map((n) => [`ART-${n}`, term]))),
+    );
+    plan.mount(root, ctx);
+
+    expect(root.querySelectorAll(".graph .over-band")).toHaveLength(1);
+    expect(root.querySelector(".graph .term-label.over")?.textContent).toContain("over 12");
+    const reasons = Array.from(root.querySelectorAll(".graph .node title")).map(
+      (t) => t.textContent ?? "",
+    );
+    expect(reasons.some((r) => r.includes("over its cap"))).toBe(false);
+    expect(root.querySelector(".graph .node.clashes")).toBeNull();
+
+    /*
+     * And nothing moves for it. The same five courses in the same term, once
+     * over the cap and once under it: the canvas and every box and heading
+     * must sit exactly where they did, and the outline must stay inside the
+     * canvas, where it cannot push anything.
+     */
+    const geometry = () => {
+      const canvas = root.querySelector(".graph")!;
+      return {
+        size: [canvas.getAttribute("width"), canvas.getAttribute("height")],
+        nodes: Array.from(root.querySelectorAll(".graph .node")).map((n) =>
+          n.getAttribute("transform"),
+        ),
+        labels: Array.from(root.querySelectorAll(".graph .term-label")).map((l) => [
+          l.getAttribute("x"),
+          l.getAttribute("y"),
+        ]),
+      };
+    };
+    const over = geometry();
+    const outline = root.querySelector(".graph .over-band")!;
+    const [x, y, w, h] = ["x", "y", "width", "height"].map((a) => Number(outline.getAttribute(a)));
+    expect(x).toBeGreaterThanOrEqual(1);
+    expect(y).toBeGreaterThanOrEqual(1);
+    expect(x! + w!).toBeLessThanOrEqual(Number(over.size[0]) - 1);
+    expect(y! + h!).toBeLessThanOrEqual(Number(over.size[1]) - 1);
+
+    localStorage.setItem(
+      "cedarville:load",
+      JSON.stringify({ perTerm: 18, summer: 7, summers: 0, fullSemesters: false }),
+    );
+    plan.mount(root, ctx);
+    expect(root.querySelector(".graph .over-band")).toBeNull();
+    expect(geometry()).toEqual(over);
+
+    localStorage.removeItem("cedarville:moves");
+    localStorage.removeItem("cedarville:load");
+  });
+
+  /*
    * SVG does not join in with HTML drag and drop, and the picture is the tab's
    * default rendering — so the moves are wired by hand here, and a feature
    * that only works in the other rendering is one most people never find.
