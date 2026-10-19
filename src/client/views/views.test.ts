@@ -1258,6 +1258,19 @@ describe("plan view — arguing with the plan", () => {
     expect(terms().flatMap(codesIn)).toContain("CS-3310");
   });
 
+  test("the drawn plan can add a course too", () => {
+    localStorage.setItem("cedarville:plan-shape", JSON.stringify("graph"));
+    plan.mount(root, ctx());
+    const bar = root.querySelector(".graph-add") as HTMLElement;
+    const input = bar.querySelector("input.add-course") as HTMLInputElement;
+    const into = bar.querySelector("select.add-term") as HTMLSelectElement;
+    into.value = into.options[1]!.value;
+    input.value = "CS-1210";
+    (bar.querySelector("button.add") as HTMLElement).click();
+    expect(JSON.parse(localStorage.getItem("cedarville:moves")!)["CS-1210#2"]).toBe(into.value);
+    localStorage.removeItem("cedarville:plan-shape");
+  });
+
   test("a second sitting waits on the same prerequisites the first did", () => {
     // CS-2210 sits behind CS-1210, so a second CS-2210 cannot land in the
     // opening term either.

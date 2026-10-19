@@ -980,6 +980,28 @@ details.req > summary {
   color: var(--lavender);
 }
 
+.graph-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.graph-add .add-course,
+.graph-add .add-term {
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--mantle);
+  border: 1px solid var(--surface);
+  border-radius: 3px;
+}
+
+.graph-add .add-course {
+  width: 26ch;
+}
+
 .term h3 .add-course {
   width: 12ch;
   padding: 1px 4px;

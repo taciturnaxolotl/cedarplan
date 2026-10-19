@@ -349,6 +349,43 @@ export function mount(root: HTMLElement, ctx: Ctx) {
     return catalogue;
   };
 
+  /** Puts a catalog course in a term, as its next sitting if it is already held. False if unknown. */
+  function addCourse(typed: string, term: string): boolean {
+    const asked = baseCode(typed.trim().toUpperCase());
+    if (!graph.courses.has(asked)) return false;
+    const held = projection.scheduled(store.get().moves);
+    const taken = (code: string) => held.has(code) || planning.have.has(code);
+    let nth = 1;
+    while (taken(sittingCode(asked, nth))) nth++;
+    place(planning.sitting(asked, nth), term);
+    return true;
+  }
+
+  /** The graph has no term boxes to hang a + on, so it gets one bar above it. */
+  function graphAdder(terms: string[]) {
+    const bar = el("div", "graph-add");
+    const input = el("input", "add-course");
+    input.type = "text";
+    input.placeholder = "add a course, e.g. HON-3020";
+    input.setAttribute("list", options().id);
+    const into = el("select", "add-term");
+    for (const term of terms)
+      into.append(Object.assign(el("option"), { value: term, textContent: term }));
+    const go = el("button", "add");
+    go.type = "button";
+    go.textContent = "+";
+    go.title = "Add this course to the chosen term.";
+    const take = () => {
+      if (!addCourse(input.value, into.value)) input.select();
+    };
+    go.addEventListener("click", take);
+    input.addEventListener("keydown", (event) => {
+      if ((event as KeyboardEvent).key === "Enter") take();
+    });
+    bar.append(input, el("span", "muted", "in"), into, go);
+    return bar;
+  }
+
   /** The one control that adds work rather than rearranging it. */
   function adder(name: string) {
     const add = el("button", "add");
@@ -363,19 +400,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
     input.setAttribute("list", options().id);
 
     const take = () => {
-      const asked = baseCode(input.value.trim().toUpperCase());
-      // Adding a course nothing in the catalog lists would plan a ghost.
-      if (!graph.courses.has(asked)) {
-        input.hidden = true;
-        return;
-      }
-      // Asking again for a course planned or already taken means its next sitting.
-      const { moves } = store.get();
-      const held = projection.scheduled(moves);
-      const taken = (code: string) => held.has(code) || planning.have.has(code);
-      let nth = 1;
-      while (taken(sittingCode(asked, nth))) nth++;
-      place(planning.sitting(asked, nth), name);
+      if (!addCourse(input.value, name)) input.hidden = true;
     };
 
     add.addEventListener("click", () => {
@@ -506,11 +531,24 @@ export function mount(root: HTMLElement, ctx: Ctx) {
         dragging = null;
         body.replaceChildren();
 
+        // Every slot up to one past the last with work in it, so there is
+        // always a term ahead to drag something into — and so an empty term
+        // in the middle stays visible rather than closing the gap silently.
+        const placed = new Map(plan.terms.map((t) => [t.slot.name, t]));
+        const slots = planning.slots(load);
+        let last = -1;
+        slots.forEach((s, at) => {
+          if (placed.has(s.name)) last = at;
+        });
+        const open = slots.slice(0, last + 2);
+
         if (drawn === "graph") {
           // The picture is the tab's own default, so the moves have to work
           // there too: a feature that only exists after you find a button is
           // a feature most people never find.
-          picture = mountGraph(body, plan, planning, { onMove: place, onRelease: release });
+          const drawing = el("div");
+          body.append(graphAdder(open.map((s) => s.name)), drawing);
+          picture = mountGraph(drawing, plan, planning, { onMove: place, onRelease: release });
           return;
         }
 
@@ -525,17 +563,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
           );
         }
 
-        // Every slot up to one past the last with work in it, so there is
-        // always a term ahead to drag something into — and so an empty term
-        // in the middle stays visible rather than closing the gap silently.
-        const placed = new Map(plan.terms.map((t) => [t.slot.name, t]));
-        const slots = planning.slots(load);
-        let last = -1;
-        slots.forEach((s, at) => {
-          if (placed.has(s.name)) last = at;
-        });
-
-        for (const slot of slots.slice(0, last + 2)) {
+        for (const slot of open) {
           const term = placed.get(slot.name);
           const credits = term?.credits ?? 0;
           const box = el("div", `term ${slot.season}${term ? "" : " empty"}`);
