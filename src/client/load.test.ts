@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { CEILING, DEFAULT_LOAD, FULL_TIME, readLoad, SUMMERS, verdictOf, writeLoad } from "./load";
+import {
+  CEILING,
+  DEFAULT_LOAD,
+  FULL_TIME,
+  honorsCap,
+  readLoad,
+  SUMMERS,
+  verdictOf,
+  writeLoad,
+} from "./load";
 
 const window = new Window();
 Object.assign(globalThis, { localStorage: window.localStorage });
@@ -25,6 +34,21 @@ describe("what the school calls a term of this size", () => {
 
   test("twelve to fifteen is full time but under a normal load", () => {
     expect(verdictOf(13).text).toBe("full time, under a normal load");
+  });
+});
+
+describe("an honors seminar moves the overblock line", () => {
+  test("a cap at seventeen becomes eighteen", () => {
+    expect(honorsCap(17)).toBe(18);
+    expect(honorsCap(17.5)).toBe(18);
+  });
+
+  test("a heavier cap is already past it", () => {
+    expect(honorsCap(18.5)).toBe(18.5);
+  });
+
+  test("a lighter load chosen on purpose stays light", () => {
+    expect(honorsCap(15)).toBe(15);
   });
 });
 

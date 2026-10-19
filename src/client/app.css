@@ -682,6 +682,21 @@ summary.course-head .release + .release {
   color: var(--subtext);
 }
 
+/* A topics course's subject, which is what tells its sections apart. */
+.block .topic {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.option .topic {
+  color: var(--text);
+  font-weight: 500;
+}
+
 /* ---- course cards ---- */
 
 details.req {

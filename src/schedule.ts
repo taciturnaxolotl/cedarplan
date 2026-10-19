@@ -52,6 +52,14 @@ export interface Offering {
   nonStandardDates: boolean;
 }
 
+/** A section's own subject ("Honors Sem: Lament" is "Lament"), or null when it is just the course. */
+export function topicOf(sectionTitle: string, courseTitle: string): string | null {
+  const own = sectionTitle.trim();
+  if (!own || own.toLowerCase() === courseTitle.trim().toLowerCase()) return null;
+  const colon = own.indexOf(": ");
+  return colon > 0 ? own.slice(colon + 2).trim() || own : own;
+}
+
 // ---- parsing -----------------------------------------------------------
 
 const DAYS: Record<string, Weekday> = {

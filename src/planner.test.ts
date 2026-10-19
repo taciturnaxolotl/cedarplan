@@ -255,6 +255,79 @@ describe("a term below full time", () => {
   });
 });
 
+describe("a term whose courses move its cap", () => {
+  const codes = ["AA-1000", "BB-1000", "CC-1000", "HON-3020"];
+  const flat = buildGraph(codes.map((code) => ({ code, title: "", requisites: [] })));
+  const price = (code: string) => (code === "HON-3020" ? 2 : code === "AA-1000" ? 4 : 6);
+  const slots = (raise?: TermSlot["raise"]): TermSlot[] => [
+    { name: "FA27", season: "fall", year: 2027, capacity: 17, ...(raise ? { raise } : {}) },
+  ];
+  const honors = { course: "HON-3020", capacity: 18 };
+
+  test("an honors seminar lets the term carry eighteen", () => {
+    const p = projectPlan({
+      need: codes,
+      completed: new Set(),
+      graph: flat,
+      credits: price,
+      offeredIn: () => true,
+      slots: slots(honors),
+    });
+    expect(p.terms[0]?.credits).toBe(18);
+    expect(p.terms[0]?.capacity).toBe(18);
+    expect(p.unscheduled).toEqual([]);
+  });
+
+  test("without it the cap is the slot's", () => {
+    const p = projectPlan({
+      need: codes,
+      completed: new Set(),
+      graph: flat,
+      credits: price,
+      offeredIn: () => true,
+      slots: slots(),
+    });
+    expect(p.terms[0]?.credits).toBeLessThanOrEqual(17);
+    expect(p.terms[0]?.capacity).toBe(17);
+  });
+
+  test("a placed term at eighteen with the seminar is not over", () => {
+    const p = projectPlan({
+      need: codes,
+      completed: new Set(),
+      graph: flat,
+      credits: price,
+      offeredIn: () => true,
+      placements: new Map(codes.map((c) => [c, "FA27"])),
+      slots: slots(honors),
+    });
+    expect(p.terms[0]?.credits).toBe(18);
+    expect(p.terms[0]?.courses.flatMap((c) => c.conflicts ?? [])).toEqual([]);
+  });
+
+  test("a term that lends its seminar away gives its lift back", () => {
+    // FA27 fills to eighteen only with the seminar in it; SP28 is part time
+    // until it borrows the one course small enough to fit, which is the seminar.
+    const lend = ["BB-1000", "CC-1000", "EE-1000", "HON-3020"];
+    const two: TermSlot[] = [
+      { name: "FA27", season: "fall", year: 2027, capacity: 17, minimum: 12, raise: honors },
+      { name: "SP28", season: "spring", year: 2028, capacity: 17, minimum: 12, raise: honors },
+    ];
+    const p = projectPlan({
+      need: lend,
+      completed: new Set(),
+      graph: buildGraph(lend.map((code) => ({ code, title: "", requisites: [] }))),
+      credits: (code) => ({ "HON-3020": 2, "EE-1000": 10 })[code] ?? 8,
+      offeredIn: (code, slot) => code !== "EE-1000" || slot.name === "SP28",
+      slots: two,
+    });
+    expect(p.terms.map((t) => [t.slot.name, t.credits, t.capacity])).toEqual([
+      ["FA27", 16, 17],
+      ["SP28", 12, 18],
+    ]);
+  });
+});
+
 describe("keeping the semesters full", () => {
   const five = ["AA", "BB", "CC", "DD", "EE"].map((s) => `${s}-1000`);
   const flat = buildGraph(five.map((code) => ({ code, title: "", requisites: [] })));

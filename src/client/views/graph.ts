@@ -359,7 +359,7 @@ export function mountGraph(
      * outline over the whole row. Red on one card read as that card being
      * wrong, when moving any course out of the term would fix it.
      */
-    const caps = new Map(plan.terms.map((t) => [t.slot.name, t.slot.capacity]));
+    const caps = new Map(plan.terms.map((t) => [t.slot.name, t.capacity]));
     const overTerms = new Set(
       map.terms
         .filter((t) => !t.past && t.credits > (caps.get(t.name) ?? Number.POSITIVE_INFINITY))

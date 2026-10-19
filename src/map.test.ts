@@ -26,6 +26,7 @@ const plan = (terms: [string, string[]][]): Plan => ({
     },
     courses: courses.map((code) => ({ code, credits: 3 })),
     credits: courses.length * 3,
+    capacity: 15,
   })),
   finishes: terms.at(-1)?.[0] ?? null,
   totalCredits: terms.reduce((n, [, c]) => n + c.length * 3, 0),

@@ -41,6 +41,8 @@ export interface TermSlot {
   year: number;
   /** Credits allowed. Block tuition usually caps the regular terms. */
   capacity: number;
+  /** A course whose presence in the term lifts its cap, and to what. */
+  raise?: { course: string; capacity: number };
   /**
    * Credits below which a term is not worth opening. Twelve is full time at
    * Cedarville, and a plan that strands three credits in a term of their own
@@ -127,6 +129,8 @@ export interface PlannedTerm {
   slot: TermSlot;
   courses: PlannedCourse[];
   credits: number;
+  /** The slot's cap, lifted if a course in the term raises it. */
+  capacity: number;
   /**
    * Below the slot's minimum, so the student would be part time. Reported
    * rather than avoided: a light term is fixed by adding a course, and
@@ -143,6 +147,13 @@ export interface Plan {
   /** Never placed: no season fits, or the slots ran out. */
   unscheduled: { code: string; why: string }[];
 }
+
+/** A term's cap once `code` joins it. */
+const capWith = (slot: TermSlot, cap: number, code: string) =>
+  slot.raise && baseCode(code) === slot.raise.course ? Math.max(cap, slot.raise.capacity) : cap;
+
+const capFor = (slot: TermSlot, codes: readonly string[]) =>
+  codes.reduce((cap, code) => capWith(slot, cap, code), slot.capacity);
 
 /**
  * Earliest-fit, prerequisites first.
@@ -217,7 +228,10 @@ export function projectPlan(request: PlanRequest): Plan {
 
     // The student's own placements go down first and unconditionally: the rest
     // of the term is arranged around them, which is the point of making one.
-    for (const code of placedOn(placements, remaining, slot.name, leverage)) {
+    // Their cap counts all of them, whichever goes down first.
+    const placed = placedOn(placements, remaining, slot.name, leverage);
+    let cap = capFor(slot, placed);
+    for (const code of placed) {
       const price = credits(code);
       const node = graph.courses.get(code) ?? { code, title: "", requisites: [] };
       const verdict = eligibility(node, taken, new Set(courses.map((c) => c.code)), {
@@ -226,10 +240,8 @@ export function projectPlan(request: PlanRequest): Plan {
       });
 
       const broken: string[] = [];
-      if (used + price > slot.capacity) {
-        broken.push(
-          `takes ${slot.name} to ${used + price} credits, over its cap of ${slot.capacity}`,
-        );
+      if (used + price > cap) {
+        broken.push(`takes ${slot.name} to ${used + price} credits, over its cap of ${cap}`);
       }
       if (!offeredIn(code, slot)) broken.push(`is not taught in ${slot.name}`);
       if (verdict.blockedBy.length) broken.push(`still needs ${verdict.blockedBy.join(", ")}`);
@@ -275,7 +287,8 @@ export function projectPlan(request: PlanRequest): Plan {
 
     for (const code of candidates) {
       const price = credits(code);
-      if (used + price > slot.capacity) continue;
+      const lifted = capWith(slot, cap, code);
+      if (used + price > lifted) continue;
 
       // Two sittings of one course belong in two terms. The catalog says so
       // in the case that needs it — "two sections of the Honors Seminar on
@@ -317,6 +330,7 @@ export function projectPlan(request: PlanRequest): Plan {
         ...(verdict.state === "unknown" ? { caution: verdict.why.join(" ") } : {}),
       });
       used += price;
+      cap = lifted;
     }
 
     // A term below full time is worth flagging, not worth refusing. Deferring
@@ -331,7 +345,7 @@ export function projectPlan(request: PlanRequest): Plan {
       placedAt.set(c.code, at);
     }
     earned += used;
-    terms.push({ slot, courses, credits: used, ...(short ? { short: true } : {}) });
+    terms.push({ slot, courses, credits: used, capacity: cap, ...(short ? { short: true } : {}) });
   }
 
   // The greedy pass is right term by term and can still be wrong across them,
@@ -459,14 +473,15 @@ function redistribute(
     const moving: { from: number; course: PlannedCourse }[] = [];
     let held = term.credits;
 
+    let cap = term.capacity;
+
     while (held < minimum) {
-      const room = term.slot.capacity - held;
       let best: { from: number; course: PlannedCourse } | null = null;
 
       for (const [from, source] of terms.slice(0, at).entries()) {
         const after = source.credits - (lent.get(from) ?? 0);
         for (const course of source.courses) {
-          if (course.credits > room) continue;
+          if (held + course.credits > capWith(term.slot, cap, course.code)) continue;
           // A term the student chose is not the planner's to reconsider.
           if (course.moved) continue;
           if (paired.has(course.code)) continue;
@@ -494,6 +509,7 @@ function redistribute(
       }
 
       if (!best) break;
+      cap = capWith(term.slot, cap, best.course.code);
       moving.push(best);
       lent.set(best.from, (lent.get(best.from) ?? 0) + best.course.credits);
       held += best.course.credits;
@@ -512,6 +528,11 @@ function redistribute(
   }
 
   for (const term of terms) {
+    // A course lent away may have been the one lifting its old term's cap.
+    term.capacity = capFor(
+      term.slot,
+      term.courses.map((c) => c.code),
+    );
     if (term.slot.minimum !== undefined && term.credits > 0 && term.credits < term.slot.minimum) {
       term.short = true;
     } else {
@@ -551,6 +572,8 @@ export function termsFrom(
     summers?: number;
     /** Applied to autumn and spring only; a summer is part time by nature. */
     minimum?: number;
+    /** Applied to autumn and spring only, as the cap it lifts is. */
+    raise?: TermSlot["raise"];
   } = {},
 ): TermSlot[] {
   const {
@@ -558,6 +581,7 @@ export function termsFrom(
     summerCapacity = 7,
     summers = Number.POSITIVE_INFINITY,
     minimum,
+    raise,
   } = options;
   const slots: TermSlot[] = [];
   let opened = 0;
@@ -571,6 +595,7 @@ export function termsFrom(
       year,
       capacity,
       ...(minimum ? { minimum } : {}),
+      ...(raise ? { raise } : {}),
     });
     if (season === "spring") {
       if (opened < summers) {

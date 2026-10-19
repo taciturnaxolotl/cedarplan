@@ -13,6 +13,7 @@ import {
   parseTime,
   span,
   toOffering,
+  topicOf,
   week,
 } from "./schedule";
 import type { Section, SectionsResponse } from "./types";
@@ -369,5 +370,23 @@ describe("the flat section-search shape", () => {
 
   test("an empty listing yields nothing", () => {
     expect(offeringsFromListing([])).toEqual([]);
+  });
+});
+
+describe("what a section is about", () => {
+  // The spring 2027 Honors Seminars, as the registrar titles them.
+  test("a topics course names its topic", () => {
+    expect(topicOf("Honors Sem: Lament", "Honors Seminar")).toBe("Lament");
+    expect(topicOf("Hon Sem: Hist/Lit of Am South", "Honors Seminar")).toBe("Hist/Lit of Am South");
+  });
+
+  test("a section named like its course has no topic", () => {
+    expect(topicOf("Honors Seminar", "Honors Seminar")).toBeNull();
+    expect(topicOf("calculus i", "Calculus I")).toBeNull();
+    expect(topicOf("", "Calculus I")).toBeNull();
+  });
+
+  test("a different title without a colon is kept whole", () => {
+    expect(topicOf("Special Topics in Rust", "Special Topics")).toBe("Special Topics in Rust");
   });
 });

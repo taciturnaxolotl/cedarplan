@@ -17,14 +17,14 @@
 
 import { shortTerm, termCodeOf } from "../../catalog";
 import { STANDING_CREDITS } from "../../planner";
-import { groupKey, type ProgramTree } from "../../requirements";
+import { type ProgramTree, sittingCode } from "../../requirements";
 import { mark, type Sitting, syncPlan } from "../../sync";
 import { applySections, installed } from "../bridge";
 import type { Ctx } from "../ctx";
 import { el, tag } from "../dom";
 import { CEILING, FULL_TIME, type Load, readLoad, SUMMERS, verdictOf, writeLoad } from "../load";
 import { editsOf, type Moves, OUT, readMoves, writeMoves } from "../moves";
-import { baseCode, planningFrom, projectionFrom, read } from "../planning";
+import { baseCode, planningFrom, projectionFrom, read, sittingWhy } from "../planning";
 import { createStore, Subscriptions } from "../store";
 import { colleagueSync } from "./colleague";
 import { mountGraph } from "./graph";
@@ -369,13 +369,12 @@ export function mount(root: HTMLElement, ctx: Ctx) {
         input.hidden = true;
         return;
       }
-      // Asking for a course the plan already holds means another sitting of
-      // it, which is the only way to say "two Honors Seminars" in a language
-      // whose nouns are course codes.
+      // Asking again for a course planned or already taken means its next sitting.
       const { moves } = store.get();
       const held = projection.scheduled(moves);
+      const taken = (code: string) => held.has(code) || planning.have.has(code);
       let nth = 1;
-      while (held.has(planning.sitting(asked, nth))) nth++;
+      while (taken(sittingCode(asked, nth))) nth++;
       place(planning.sitting(asked, nth), name);
     };
 
@@ -426,10 +425,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
     const nth = Number(code.split("#")[1] ?? 1);
     if (nth > 1) {
       const again = tag(`sitting ${nth}`, "rule");
-      again.title =
-        "The same course again, because the requirement asks for more of it than one sitting " +
-        "gives: the honours seminars are four credits of a two-credit seminar, taken twice on " +
-        "different topics. Worth confirming with your advisor.";
+      again.title = sittingWhy(code, projection.need.has(code));
       line.append(again);
     }
 
@@ -550,17 +546,18 @@ export function mount(root: HTMLElement, ctx: Ctx) {
           head.append(document.createTextNode(slot.name));
           // Against the cap rather than alone: a term is read by how much
           // room is left in it, and that is the number a drag is deciding.
-          const meter = el("span", "cr", `${credits} / ${slot.capacity} cr`);
-          meter.title = `${credits} credits scheduled of the ${slot.capacity} this term allows${
-            slot.minimum ? `, and ${slot.minimum} is full time` : ""
-          }.`;
+          const cap = term?.capacity ?? slot.capacity;
+          const meter = el("span", "cr", `${credits} / ${cap} cr`);
+          meter.title = `${credits} credits scheduled of the ${cap} this term allows${
+            cap > slot.capacity ? " with its Honors Seminar" : ""
+          }${slot.minimum ? `, and ${slot.minimum} is full time` : ""}.`;
           head.append(meter);
           const note = el("span", "note");
           notes.set(slot.name, note);
           head.append(note);
-          if (credits > slot.capacity) {
+          if (credits > cap) {
             const over = tag("over cap", "bad");
-            over.title = `${credits} credits against a ${slot.capacity}-credit cap.`;
+            over.title = `${credits} credits against a ${cap}-credit cap.`;
             head.append(over);
           } else if (term?.short) {
             const light = tag("part time", "cheap");

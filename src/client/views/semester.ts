@@ -34,6 +34,7 @@ import {
   type Meeting,
   type Offering,
   offeringsFromListing,
+  topicOf,
   type Weekday,
 } from "../../schedule";
 import { type SectionPick, syncSections } from "../../sync";
@@ -44,7 +45,7 @@ import { el, tag } from "../dom";
 import { olderThan, since, TERM_HOURS } from "../freshness";
 import { readLoad } from "../load";
 import { type Moves, OUT, readMoves, writeMoves } from "../moves";
-import { baseCode, planningFrom, projectionFrom, read } from "../planning";
+import { baseCode, planningFrom, projectionFrom, read, sittingWhy } from "../planning";
 import { createStore, Subscriptions } from "../store";
 import { colleagueSync } from "./colleague";
 
@@ -479,6 +480,10 @@ export function mount(root: HTMLElement, ctx: Ctx) {
 
   // ---- the week -----------------------------------------------------------
 
+  /** What a section is about, when its course is a topics course. */
+  const topicIn = (offering: Offering) =>
+    topicOf(offering.title, planning.title(offering.courseName));
+
   /** The arrangement, plus the sections of whatever course is being offered up. */
   const blocks = (showing: string | null): Block[] => {
     const held = chosenIn(shown);
@@ -494,6 +499,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
         meeting,
         kind: pinnedNow.has(offering.id) ? ("pinned" as const) : ("suggested" as const),
         clash: clashing.has(offering.id),
+        topic: topicIn(offering),
       })),
     );
 
@@ -511,6 +517,7 @@ export function mount(root: HTMLElement, ctx: Ctx) {
           offering,
           meeting,
           kind: "ghost",
+          topic: topicIn(offering),
           // What it would cost: a clash with anything except the section of
           // its own course that it would be replacing.
           clash: held.some(
@@ -587,15 +594,15 @@ export function mount(root: HTMLElement, ctx: Ctx) {
 
     const line = el("summary", "course-head");
     line.append(el("b", "code", code));
-    line.append(el("span", "title", planning.title(code) || row.offerings[0]?.title || ""));
+    const courseTitle = planning.title(code) || row.offerings[0]?.title || "";
+    const titleBox = el("span", "title", courseTitle);
+    line.append(titleBox);
     line.append(el("span", "cr", `${row.credits} cr`));
 
     const nth = Number(row.code.split("#")[1] ?? 1);
     if (nth > 1) {
       const again = tag(`sitting ${nth}`, "rule");
-      again.title =
-        "The same course again, because the requirement asks for more of it than one sitting " +
-        "gives. Worth confirming with your advisor.";
+      again.title = sittingWhy(row.code, projection.need.has(row.code));
       line.append(again);
     }
 
@@ -691,7 +698,10 @@ export function mount(root: HTMLElement, ctx: Ctx) {
       });
 
       const mark = el("span", "mark");
-      option.append(box, el("b", "num", offering.number), el("span", "when", whenOf(offering)));
+      option.append(box, el("b", "num", offering.number));
+      const topic = topicIn(offering);
+      if (topic) option.append(el("span", "topic", topic));
+      option.append(el("span", "when", whenOf(offering)));
       if (offering.meetings[0]?.room) option.append(el("span", "room", offering.meetings[0].room));
       if (offering.instructors.length)
         option.append(el("span", "who", offering.instructors.join(", ")));
@@ -734,6 +744,8 @@ export function mount(root: HTMLElement, ctx: Ctx) {
         ? `whichever fits best — ${chosen.number} today`
         : "whichever fits best";
       slotChip.textContent = chosen ? `${chosen.number} · ${whenOf(chosen)}` : "nowhere it fits";
+      const topic = chosen ? topicIn(chosen) : null;
+      titleBox.textContent = topic ? `${courseTitle}: ${topic}` : courseTitle;
       slotChip.className = `slot${mine ? " mine" : chosen ? "" : " none"}`;
       slotChip.title = chosen
         ? mine
@@ -799,10 +811,13 @@ export function mount(root: HTMLElement, ctx: Ctx) {
     head.append(el("h2", undefined, slot ? `${slotName} · ${term}` : term));
     const scheduled = planned?.credits ?? 0;
     if (slot) {
-      const meter = el("span", "cr", `${scheduled} / ${slot.capacity} cr planned`);
+      const cap = planned?.capacity ?? slot.capacity;
+      const meter = el("span", "cr", `${scheduled} / ${cap} cr planned`);
       meter.title =
-        `The plan puts ${scheduled} credits in this term, against the ${slot.capacity} ` +
-        "your chosen load allows.";
+        `The plan puts ${scheduled} credits in this term, against the ${cap} ` +
+        (cap > slot.capacity
+          ? "your chosen load allows with an Honors Seminar in it."
+          : "your chosen load allows.");
       head.append(meter);
     } else {
       const aside = tag("not in your plan", "rule");
@@ -941,6 +956,7 @@ interface Block {
   /** The student's choice, the arranger's, or a section being hovered. */
   kind: "pinned" | "suggested" | "ghost";
   clash: boolean;
+  topic: string | null;
 }
 
 interface GridHandlers {
@@ -1004,6 +1020,8 @@ function renderGrid(blocks: Block[], handlers: GridHandlers): HTMLElement {
       node.style.left = `${(lanes[at] ?? 0) * width}%`;
       node.style.width = `${width}%`;
       node.append(el("b", undefined, item.offering.courseName));
+      const { topic } = item;
+      if (topic) node.append(el("i", "topic", topic));
       node.append(
         el(
           "span",
@@ -1013,6 +1031,7 @@ function renderGrid(blocks: Block[], handlers: GridHandlers): HTMLElement {
       );
       node.title =
         `${item.offering.courseName} ${item.offering.number} · ` +
+        (topic ? `${topic} · ` : "") +
         `${formatTime(item.meeting.start)}–${formatTime(item.meeting.end)}` +
         (item.offering.instructors.length ? ` · ${item.offering.instructors.join(", ")}` : "") +
         (item.kind === "ghost"

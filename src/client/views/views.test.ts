@@ -457,6 +457,31 @@ describe("semester view", () => {
     expect(card.textContent).toContain("ENS 234");
   });
 
+  test("a topics course shows each section's topic", () => {
+    // The Honors Seminar is one course with a different subject every
+    // section, and the subject is the only thing worth choosing on.
+    semester.mount(
+      root,
+      ctxOf([
+        sectionOf({ Title: "Honors Sem: Lament" }),
+        sectionOf({ Number: "02", Title: "Hon Sem: Hist/Lit of Am South" }, "T, Th"),
+      ]),
+    );
+    const topics = options("CS-1210").map((o) => o.querySelector(".topic")?.textContent);
+    expect(topics).toEqual(["Lament", "Hist/Lit of Am South"]);
+    // Once a section is settled on, the card and the week both say which.
+    expect(headFor("CS-1210").querySelector(".title")?.textContent).toMatch(
+      /^Intro: (Lament|Hist\/Lit of Am South)$/,
+    );
+    expect(root.querySelector(".block .topic")?.textContent).toBeTruthy();
+  });
+
+  test("a section titled like its course adds nothing", () => {
+    semester.mount(root, ctxOf([sectionOf()]));
+    expect(cardFor("CS-1210").querySelector(".topic")).toBeNull();
+    expect(headFor("CS-1210").querySelector(".title")?.textContent).toBe("Intro");
+  });
+
   test("opens itself when the choice has gone wrong", () => {
     // No section at all is the case a student has to act on.
     semester.mount(root, ctxOf([sectionOf()], PAIR, pairTree()));
@@ -1171,6 +1196,66 @@ describe("plan view — arguing with the plan", () => {
     expect(codes.filter((c) => c === "CS-1210")).toHaveLength(2);
     expect(root.textContent).toContain("sitting 2");
     expect(root.textContent).not.toContain("#2");
+  });
+
+  test("adding it again and again keeps making sittings", () => {
+    // The Honors Seminar runs on a new topic every term, and an honors student
+    // may take as many of them as they like.
+    plan.mount(root, ctx());
+    for (let i = 0; i < 3; i++) {
+      const box = terms()[i]!;
+      (box.querySelector("button.add") as HTMLElement).click();
+      const input = box.querySelector("input.add-course") as HTMLInputElement;
+      input.value = "CS-1210";
+      fire(input, "change");
+    }
+    const moves = JSON.parse(localStorage.getItem("cedarville:moves")!);
+    expect(Object.keys(moves).sort()).toEqual(["CS-1210#2", "CS-1210#3", "CS-1210#4"]);
+    expect(
+      terms()
+        .flatMap(codesIn)
+        .filter((c) => c === "CS-1210"),
+    ).toHaveLength(4);
+    expect(root.textContent).toContain("sitting 4");
+  });
+
+  test("adding a course already taken plans another sitting rather than nothing", () => {
+    // A seminar sat last spring is on the transcript as HON-3020, and asking
+    // for another one is asking for a second sitting, not the first again.
+    const raw = program("BS.CYOPR", [
+      group({ Courses: [course("1", "CS", "1210")] }),
+      group({
+        Courses: [course("3", "CS", "3310")],
+        AppliedAcademicCredits: [
+          {
+            Id: "a1",
+            CourseId: "3",
+            CourseName: "CS-3310",
+            Title: "Algorithms",
+            Credit: 3,
+            VerifiedGrade: "A",
+            Term: "24/FA",
+            IsCompletedCredit: true,
+            IsTransferCourse: false,
+            IsWithdrawn: false,
+            IsExtraCourse: false,
+            AllowedByOverride: false,
+            ReplacedStatus: "NotReplaced",
+            ReplacementStatus: "NotReplacement",
+          },
+        ],
+      }),
+    ]);
+    raw.Program.Requirements[0]!.Subrequirements[0]!.MinGroups = null;
+    plan.mount(root, { ...ctx(), trees: [normalize(raw)] } as Ctx);
+    const first = terms()[0]!;
+    (first.querySelector("button.add") as HTMLElement).click();
+    const input = first.querySelector("input.add-course") as HTMLInputElement;
+    input.value = "CS-3310";
+    fire(input, "change");
+
+    expect(JSON.parse(localStorage.getItem("cedarville:moves")!)["CS-3310#2"]).toBeTruthy();
+    expect(terms().flatMap(codesIn)).toContain("CS-3310");
   });
 
   test("a second sitting waits on the same prerequisites the first did", () => {

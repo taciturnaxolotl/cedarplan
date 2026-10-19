@@ -8,6 +8,8 @@
  *   12      full time; below this a student is part time
  *   15-17   "a normal course load"
  *   17      above this, overblock tuition applies
+ *   18      the same line for an honors student in a term with an Honors
+ *           Seminar
  *   18.5    the ceiling with advisor approval alone
  *   16      the average needed to finish in eight semesters
  *
@@ -35,6 +37,14 @@ export const FULL_TIME = 12;
 export const NORMAL = [15, 17] as const;
 export const OVERBLOCK = 17;
 export const CEILING = 18.5;
+
+/** Where overblock starts for an honors student taking an Honors Seminar. */
+export const HONORS_OVERBLOCK = 18;
+export const HONORS_SEMINAR = "HON-3020";
+
+/** The cap a seminar term lifts to; a load chosen below overblock stays put. */
+export const honorsCap = (capacity: number) =>
+  capacity >= OVERBLOCK ? Math.max(capacity, HONORS_OVERBLOCK) : capacity;
 
 /** Four summers is every one the twelve-term horizon holds. */
 export const SUMMERS = 4;

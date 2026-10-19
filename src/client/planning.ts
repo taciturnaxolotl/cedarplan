@@ -46,7 +46,7 @@ import {
 import { sequencesFrom } from "../sequences";
 import { installed, resolveRules, searcher } from "./bridge";
 import type { Ctx } from "./ctx";
-import { FULL_TIME, type Load } from "./load";
+import { FULL_TIME, HONORS_SEMINAR, honorsCap, type Load } from "./load";
 import { editsOf, type Moves } from "./moves";
 
 /**
@@ -55,6 +55,16 @@ import { editsOf, type Moves } from "./moves";
  * views ask this question constantly and the solver is where it is answered.
  */
 export { baseCode } from "../requirements";
+
+/** Why a course is on the plan more than once, for the "sitting N" tag. */
+export function sittingWhy(code: string, required: boolean): string {
+  if (required) {
+    return "The same course again, because the requirement asks for more of it than one sitting gives.";
+  }
+  return baseCode(code) === HONORS_SEMINAR
+    ? "An Honors Seminar beyond the two required. Take as many as you like, each on a new topic."
+    : "The same course again, added by you. Check with your advisor that it repeats for credit.";
+}
 
 /** Where the build view keeps what the student has settled on. */
 export const PINS = "cedarville:pins";
@@ -190,6 +200,7 @@ export function planningFrom(ctx: Ctx): Planning {
   };
   const have = new Set([...passed, ...running]);
   const pursuing = new Set(trees.flatMap((t) => [...t.majors, ...t.minors]));
+  const honors = pursuing.has("Honors Program");
   const earned = trees.length
     ? Math.max(...trees.map((t) => t.credits.completed + t.credits.inProgress))
     : 0;
@@ -216,6 +227,7 @@ export function planningFrom(ctx: Ctx): Planning {
       summerCapacity: load.summer,
       summers: load.summers,
       minimum: FULL_TIME,
+      ...(honors ? { raise: { course: HONORS_SEMINAR, capacity: honorsCap(load.perTerm) } } : {}),
     });
 
   return {
