@@ -1193,6 +1193,14 @@ export interface OpenChoice {
   pool: string[];
   credits: number;
   ids: Unenumerable["ids"];
+  /**
+   * The requirement this group sits in, qualified by program. Colleague applies
+   * a course to one group per requirement: `MATH-2520` in the computer science
+   * core does not also pay for the MATH elective beside it, though it matches
+   * the elective's filter. Across requirements, and across programs, a course
+   * counts everywhere it fits.
+   */
+  scope: string;
 }
 
 /**
@@ -1238,6 +1246,13 @@ function walkProgram(
   const subPinned = (s: Subrequirement) => s.groups.some(groupPinned);
 
   for (const requirement of tree.requirements) {
+    const scope = `${tree.code}/${requirement.id}`;
+    // Which group in this requirement each course is spoken for by: a course
+    // the requirement lists outright, or one Colleague has already applied.
+    const claims = new Map<string, Set<Group>>();
+    const claim = (code: string, group: Group) =>
+      claims.set(code, (claims.get(code) ?? new Set()).add(group));
+    const local: { choice: OpenChoice; group: Group }[] = [];
     const subs = [...requirement.subrequirements];
     // "Any one of these six" — take the cheapest, not all six.
     const wantSubs = requirement.minSubrequirements ?? subs.length;
@@ -1308,6 +1323,13 @@ function walkProgram(
       }
 
       for (const group of chosenGroups) {
+        if (group.constraint.kind === "take-all") {
+          for (const x of group.constraint.courses) claim(x.CourseName, group);
+        }
+        for (const credit of group.applied) claim(credit.CourseName, group);
+      }
+
+      for (const group of chosenGroups) {
         if (group.status.completion === "Completed") continue;
         const c = group.constraint;
 
@@ -1325,12 +1347,16 @@ function walkProgram(
           // its own afterwards.
           const pool = !bucket ? options.resolved?.get(groupKey(ids)) : undefined;
           if (pool?.length) {
-            choices.push({
-              program: tree.code,
-              text: group.text || requirement.text || group.code,
-              pool: [...pool],
-              credits: group.min.credits ?? 3,
-              ids,
+            local.push({
+              group,
+              choice: {
+                program: tree.code,
+                text: group.text || requirement.text || group.code,
+                pool: [...pool],
+                credits: group.min.credits ?? 3,
+                ids,
+                scope,
+              },
             });
             continue;
           }
@@ -1358,20 +1384,33 @@ function walkProgram(
           // is not a choice for them, whatever the pool says.
           const mandate = options.pursuing && directiveFor(group.text, options.pursuing)?.course;
           const pool = c.courses.map((x) => x.CourseName);
-          choices.push({
-            program: tree.code,
-            text: group.text || requirement.text || group.code,
-            ...(mandate && pool.includes(mandate) ? { mandated: mandate } : {}),
-            pool: mandate && pool.includes(mandate) ? [mandate] : pool,
-            credits: group.min.credits ?? options.credits(c.courses[0]?.CourseName ?? ""),
-            ids: {
-              requirement: group.requirementCode,
-              subrequirement: group.subrequirementId,
-              group: group.id,
+          local.push({
+            group,
+            choice: {
+              program: tree.code,
+              text: group.text || requirement.text || group.code,
+              ...(mandate && pool.includes(mandate) ? { mandated: mandate } : {}),
+              pool: mandate && pool.includes(mandate) ? [mandate] : pool,
+              credits: group.min.credits ?? options.credits(c.courses[0]?.CourseName ?? ""),
+              ids: {
+                requirement: group.requirementCode,
+                subrequirement: group.subrequirementId,
+                group: group.id,
+              },
+              scope,
             },
           });
         }
       }
+    }
+
+    // A course another group in this requirement already takes is not on
+    // offer here, however well it matches the pool.
+    for (const { choice, group } of local) {
+      choice.pool = choice.pool.filter((code) =>
+        [...(claims.get(code) ?? [])].every((owner) => owner === group),
+      );
+      choices.push(choice);
     }
   }
 
@@ -1549,6 +1588,9 @@ function headNoun(text: string): string | undefined {
  * per group in isolation buys a second course for a requirement that is already
  * met, and enough of those push a graduation date out by a term.
  *
+ * Within one requirement it does not: a course pays one group there and no
+ * other, so each purchase goes to the hungriest group in each scope.
+ *
  * Weighted greedy: repeatedly take whichever course closes the most remaining
  * credit per credit spent. Exact set cover is NP-hard and the greedy bound is
  * comfortably good enough for a few dozen requirements — and unlike an exact
@@ -1556,22 +1598,55 @@ function headNoun(text: string): string | undefined {
  */
 function cover(
   courses: Set<string>,
-  choices: { pool: string[]; credits: number }[],
+  choices: { pool: string[]; credits: number; scope: string }[],
   options: NeedOptions,
 ): number[] {
-  const owed = choices.map((choice) => {
-    let left = choice.credits;
-    // Anything already passed, or already required outright, counts first —
-    // every sitting of it, since the point of a second one is the credit.
-    for (const code of choice.pool) {
+  /** Sittings each requirement has already spent on one of its groups. */
+  const spent = new Map<string, Set<string>>();
+  const spentIn = (scope: string) => {
+    let set = spent.get(scope);
+    if (!set) spent.set(scope, (set = new Set()));
+    return set;
+  };
+
+  const owed = choices.map((choice) => ({
+    pool: choice.pool,
+    scope: choice.scope,
+    left: choice.credits,
+  }));
+
+  /** The one group per requirement a sitting of `base` would pay, hungriest first. */
+  const takers = (from: typeof owed, base: string, sitting: string) => {
+    const best = new Map<string, (typeof owed)[number]>();
+    for (const o of from) {
+      if (!o.pool.includes(base) || spentIn(o.scope).has(sitting)) continue;
+      const held = best.get(o.scope);
+      if (!held || o.left > held.left) best.set(o.scope, o);
+    }
+    return [...best.values()];
+  };
+
+  /** Pays a sitting into every requirement that can use it, once each. */
+  const pay = (from: typeof owed, base: string, sitting: string) => {
+    for (const o of takers(from, base, sitting)) {
+      o.left -= options.credits(base);
+      spentIn(o.scope).add(sitting);
+    }
+  };
+
+  // Anything already passed, or already required outright, counts first —
+  // every sitting of it, since the point of a second one is the credit.
+  for (const o of owed) {
+    for (const code of o.pool) {
       for (let nth = 1; ; nth++) {
         const sitting = sittingCode(code, nth);
         if (!options.have.has(sitting) && !courses.has(sitting)) break;
-        left -= options.credits(code);
+        if (o.left <= 0 || spentIn(o.scope).has(sitting)) continue;
+        o.left -= options.credits(code);
+        spentIn(o.scope).add(sitting);
       }
     }
-    return { pool: choice.pool, left };
-  });
+  }
 
   /** What each choice still wants once nothing more can be bought for it. */
   const shortfall = () => owed.map((o) => Math.max(0, o.left));
@@ -1590,9 +1665,9 @@ function cover(
       const sitting = sittingCode(pick, nth);
       if (options.have.has(sitting) || courses.has(sitting)) continue;
       courses.add(sitting);
-      for (const o of owed) {
-        if (o.pool.includes(pick)) o.left -= options.credits(pick);
-      }
+      owe.left -= options.credits(pick);
+      spentIn(owe.scope).add(sitting);
+      pay(owed, pick, sitting);
     }
   }
 
@@ -1617,9 +1692,10 @@ function cover(
       const price = (options.cost ?? options.credits)(base) || 1;
       // Credit actually closed, not credit offered: a 4-credit course against
       // a 3-credit requirement closes three.
-      const closed = open
-        .filter((o) => o.pool.includes(base))
-        .reduce((n, o) => n + Math.min(options.credits(base), o.left), 0);
+      const closed = takers(open, base, code).reduce(
+        (n, o) => n + Math.min(options.credits(base), o.left),
+        0,
+      );
       const value = closed / price;
       if (!best || value > best.value || (value === best.value && code < best.code)) {
         best = { code, value };
@@ -1628,10 +1704,7 @@ function cover(
     if (!best || best.value <= 0) return shortfall();
 
     courses.add(best.code);
-    const bought = baseCode(best.code);
-    for (const o of open) {
-      if (o.pool.includes(bought)) o.left -= options.credits(bought);
-    }
+    pay(open, baseCode(best.code), best.code);
   }
 }
 

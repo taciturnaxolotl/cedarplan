@@ -769,20 +769,19 @@ describe("covering a requirement with what is already planned", () => {
 
 describe("covering several choices at once", () => {
   const credits = (c: string) => (c.endsWith("-4000") ? 4 : 3);
+  /** One requirement per entry, as general education and a major are. */
   const withGroups = (groups: RawGroup[][]) => {
     const raw = program("A", []);
-    raw.Program.Requirements = [
-      {
-        Id: "r",
-        Code: "R",
-        Description: "R",
-        CompletionStatus: "NotStarted",
-        PlanningStatus: "NotPlanned",
-        MinSubrequirements: null,
-        MinGpa: null,
-        Subrequirements: groups.map((g, i) => sub(`s${i}`, g)),
-      },
-    ] as never;
+    raw.Program.Requirements = groups.map((g, i) => ({
+      Id: `r${i}`,
+      Code: `R${i}`,
+      Description: `R${i}`,
+      CompletionStatus: "NotStarted",
+      PlanningStatus: "NotPlanned",
+      MinSubrequirements: null,
+      MinGpa: null,
+      Subrequirements: [sub(`s${i}`, g)],
+    })) as never;
     return normalize(raw);
   };
 
@@ -902,9 +901,15 @@ describe("rule groups joining the cover", () => {
    * and a course already required for something else can pay for it.
    */
   test("a resolved rule group is covered by a course already required", () => {
-    const tree = normalize(
-      program("A", [group({ Courses: [course("1", "HON", "1020")] }), ruleGroup("g1")]),
-    );
+    // The honors colloquium and the humanities slot it also fills are two
+    // requirements, which is what lets one course pay both.
+    const raw = program("A", [ruleGroup("g1")]);
+    const honors = program("B", [group({ Courses: [course("1", "HON", "1020")] })]);
+    raw.Program.Requirements = [
+      ...raw.Program.Requirements,
+      ...honors.Program.Requirements,
+    ] as never;
+    const tree = normalize(raw);
     const resolved = new Map([["R/S/g1", ["GEO-3040", "HON-1020"]]]);
     const { courses, unenumerable } = coursesNeeded(tree, {
       credits,
@@ -1240,6 +1245,75 @@ describe("pinning a course", () => {
       pinned: new Set(["ART-1100"]),
     });
     expect([...courses].sort()).toEqual(["ART-1100", "CS-1210"]);
+  });
+});
+
+describe("one course, one group per requirement", () => {
+  const discrete = course("1", "MATH", "2520");
+  const linear = course("2", "MATH", "3610");
+  const key = (id: string) => groupKey({ requirement: "", subrequirement: "", group: id });
+
+  /*
+   * Computer science, 2026: the core lists MATH-2520 and a sibling group asks
+   * for a 2000-level-or-above MATH elective. Colleague applies MATH-2520 to
+   * the core and leaves the elective unplanned until something else is added.
+   */
+  const major = () =>
+    normalize(
+      program("A", [
+        group({ Id: "core", Courses: [discrete, course("3", "CS", "3610")] }),
+        group({
+          Id: "elective",
+          DisplayText: "MATH-2XXX,-3XXX,-4XXX Elective (3 credit hours)",
+          FromSubjects: [{ Code: "MATH", Description: "Mathematics" }],
+          FromLevels: ["200", "300", "400"],
+          MinCredits: 3,
+        }),
+      ]),
+    );
+
+  test("a core course does not also pay for the elective beside it", () => {
+    const { courses, choices } = coursesNeededAcross([major()], {
+      credits: () => 3,
+      have: new Set(),
+      resolved: new Map([[key("elective"), ["MATH-2520", "MATH-3610"]]]),
+    });
+    expect(courses.has("MATH-3610")).toBe(true);
+    expect(choices[0]!.pool).toEqual(["MATH-3610"]);
+  });
+
+  test("nor once it has been passed", () => {
+    const { courses } = coursesNeededAcross([major()], {
+      credits: () => 3,
+      have: new Set(["MATH-2520"]),
+      resolved: new Map([[key("elective"), ["MATH-2520", "MATH-3610"]]]),
+    });
+    expect(courses.has("MATH-3610")).toBe(true);
+  });
+
+  test("two electives in one requirement do not share a purchase", () => {
+    const tree = normalize(
+      program("A", [
+        group({ Id: "one", FromCourses: [discrete, linear], MinCredits: 3 }),
+        group({ Id: "two", FromCourses: [discrete, linear], MinCredits: 3 }),
+      ]),
+    );
+    const { courses, shortfalls } = coursesNeededAcross([tree], {
+      credits: () => 3,
+      have: new Set(),
+    });
+    expect([...courses].sort()).toEqual(["MATH-2520", "MATH-3610"]);
+    expect(shortfalls).toEqual([]);
+  });
+
+  test("across programs a course still counts in both", () => {
+    const pick = (code: string) =>
+      normalize(program(code, [group({ FromCourses: [discrete, linear], MinCredits: 3 })]));
+    const { courses } = coursesNeededAcross([pick("A"), pick("B")], {
+      credits: () => 3,
+      have: new Set(),
+    });
+    expect(courses.size).toBe(1);
   });
 });
 
